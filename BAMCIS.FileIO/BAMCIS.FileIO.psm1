@@ -806,7 +806,7 @@ Function Set-Owner {
 }
 
 Function Invoke-ForceDelete {
-		<#
+	<#
 		.SYNOPSIS
 			The cmdlet forces the deletion of a file or folder and all of its content.
 
@@ -1559,4 +1559,244 @@ Function Invoke-ExtractGZip {
 
 	End {
 	}
+}
+
+Function New-ISO {
+    <#
+        .SYNOPSIS
+            Creates a new ISO image from the specified content.
+
+        .DESCRIPTION
+            This cmdlet creates in ISO image file containing specified content. It can also be used to make a bootable ISO with something like WinPE.
+
+        .PARAMETER Content
+            The FileInfo, DirectoryInfo, or string Path names of the files and folders to include in the ISO. Each item will be added to the root of the ISO file system tree.
+
+        .PARAMETER Destination
+            The location the ISO file will be created and written to. Use -Force to overwrite an existing file.
+
+        .PARAMETER BootFile
+            The path to a boot file. For example c:\Program Files (X86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\efisys.bin".
+
+        .PARAMETER Media
+            The media type to emulate with the ISO. This defaults to DVDPLUSRW_DUALLAYER.
+
+        .PARAMETER Title
+            The title of the ISO image file.
+
+        .EXAMPLE
+            New-ISO -Content c:\users\john.smith\Desktop -Destination c:\users\john.smith\desktop\backup.iso
+
+            This creates a new ISO image file on the user's desktop containing the desktop folder at the root of the ISO with all of its contents inside.
+
+        .EXAMPLE
+            Get-ChildItem -Path c:\users\john.smith\Desktop | New-ISO -Destination c:\users\john.smith\desktop\backup.iso
+
+            This creates a new ISO image file on the user's desktop containing the contents of the desktop folder at the root of the ISO.
+
+        .EXAMPLE
+            Get-ChildItem -Path c:\WinPE | New-ISO -Destination c:\temp\WinPE.iso -BootFile "$env:ProgramFiles(x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\efisys.bin" -Media DVDPLUSR -Title "WinPE" 
+
+            This creates a bootable ISO from WinPE and includes the contents of the c:\WinPE folder in the image.
+
+        .INPUT
+            System.Object[]
+
+        .OUTPUT
+            System.IO.FileInfo
+
+        .NOTES
+            AUTHOR: Michael Haken
+            LAST UPDATE: 2/23/2019
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = "Content")]
+    Param(
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = "Content", ValueFromPipeline = $true)]
+        [ValidateNotNullOrEmpty()]
+        [System.Object[]]$Content,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [ValidateNotNullOrEmpty()]
+        [System.String]$Destination,
+
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [ValidateScript({
+            Test-Path -Path $_
+        })]
+        [System.String]$BootFile = [System.String]::Empty,
+
+        [Parameter()]
+        [ValidateSet("CDR","CDRW","DVDRAM","DVDPLUSR","DVDPLUSRW","DVDPLUSR_DUALLAYER","DVDDASHR","DVDDASHRW","DVDDASHR_DUALLAYER","DISK","DVDPLUSRW_DUALLAYER","BDR","BDRE")]
+        [System.String]$Media = "DVDPLUSRW_DUALLAYER",
+
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [System.String]$Title = ([System.DateTime]::UtcNow.ToString("yyyy-mm-ddThh:mm:ss.fff")),
+
+        [Parameter()]
+        [Switch]$Force
+    )
+
+    Begin {
+        if (-not [System.String]::IsNullOrEmpty($BootFile)) 
+        {       
+            if (@("BDR","BDRE") -contains $Media) 
+            { 
+                throw "Bootable image doesn't work with media type $Media." 
+            } 
+
+            $BootFileName = Get-Item -LiteralPath $BootFile | Select-Object -ExpandProperty FullName
+            $Stream = New-Object -ComObject ADODB.Stream -Property @{Type = 1}
+            $Stream.Open()
+            $Stream.LoadFromFile($BootFileName)
+            $BootOptions = New-Object -ComObject IMAPI2FS.BootOptions
+            $BootOptions.AssignBootImage($Stream)
+        }
+        
+        if (([System.AppDomain]::CurrentDomain.GetAssemblies() | 
+            Where-Object { -not [System.String]::IsNullOrEmpty($_.Location) } | 
+            Select-Object -Property @{Name = "Type"; Expression = {$_.GetTypes()}} |
+            Select-Object -ExpandProperty Type |
+            Where-Object { $_.FullName -eq "BAMCIS.FileIO.ISO.IMAPI_MEDIA_PHYSICAL_TYPE" }).Count -eq 0)
+        {
+            # The members are prefaced with IMAPI_MEDIA_TYPE_ in the real enum
+            Add-Type -TypeDefinition @"
+namespace BAMCIS.FileIO.ISO
+{
+    public enum IMAPI_MEDIA_PHYSICAL_TYPE
+    {
+        UNKNOWN,
+        CDROM,
+        CDR,
+        CDRW,
+        DVDROM,
+        DVDRAM,
+        DVDPLUSR,
+        DVDPLUSRW,
+        DVDPLUSR_DUALLAYER,
+        DVDDASHR,
+        DVDDASHRW,
+        DVDDASHR_DUALLAYER,
+        DISK,
+        DVDPLUSRW_DUALLAYER,
+        HDDVDROM,
+        HDDVDR,
+        HDDVDRAM,
+        BDROM,
+        BDR,
+        BDRE,
+        MAX
+    }
+}
+"@
+        }
+
+        
+        if (([System.AppDomain]::CurrentDomain.GetAssemblies() | 
+            Where-Object { -not [System.String]::IsNullOrEmpty($_.Location) } | 
+            Select-Object -Property @{Name = "Type"; Expression = {$_.GetTypes()}} |
+            Select-Object -ExpandProperty Type |
+            Where-Object { $_.FullName -eq "BAMCIS.FileIO.ISO.ISOFile" }).Count -eq 0)
+        {
+            [System.CodeDom.Compiler.CompilerParameters]$CompilerParameters = New-Object -TypeName System.CodeDom.Compiler.CompilerParameters
+            $CompilerParameters.CompilerOptions = "/unsafe"
+
+            # Needs to be unsafe so that we can reference
+            Add-Type -CompilerParameters $CompilerParameters -TypeDefinition @"
+using System.Runtime.InteropServices.ComTypes;
+using System.IO;
+using System;
+
+namespace BAMCIS.FileIO.ISO
+{
+    public class ISOFile
+    {
+        private ISOFile()
+        {
+        }
+
+        public unsafe static void Create(string path, object stream, int blockSize, int totalBlocks)
+        {
+            int Bytes = 0;
+            IntPtr SeekPointer = (IntPtr)(&Bytes);
+            byte[] Buffer = new byte[blockSize];
+            IStream InputStream = stream as IStream;
+
+            using (FileStream FStream = System.IO.File.OpenWrite(path))
+            {          
+                if (FStream != null)
+                {
+                    while (totalBlocks > 0)
+                    {
+                        InputStream.Read(Buffer, blockSize, SeekPointer);
+                        FStream.Write(Buffer, 0, Bytes);
+                        totalBlocks += -1;
+                    }
+                }
+                else
+                {
+                    throw new InvalidOperationException(String.Format("The file stream at {0} was null.", path));
+                }
+            }
+        }
+    }
+}
+"@
+        }
+
+        [BAMCIS.FileIO.ISO.IMAPI_MEDIA_PHYSICAL_TYPE]$MediaType = [System.Enum]::Parse([BAMCIS.FileIO.ISO.IMAPI_MEDIA_PHYSICAL_TYPE], $Media)
+       
+        Write-Verbose -Message "Selected media type is $($MediaType.ToString()) with value $([System.Int32]$MediaType)."
+
+        $Image = New-Object -ComObject IMAPI2FS.MsftFileSystemImage -Property @{VolumeName = $Title}
+        $Image.ChooseImageDefaultsForMediaType(([Int32]$MediaType)) 
+    }
+
+    Process {
+        foreach ($Item in $Content)
+        {
+            if ($Item -isnot [System.IO.FileInfo] -and $Item -isnot [System.IO.DirectoryInfo])
+            {
+                $Item = Get-Item -LiteralPath $Item
+            }
+
+            Write-Verbose -Message "Adding $($Item.FullName) to image."
+
+            try 
+            { 
+                $Image.Root.AddTree($Item.FullName, $true) 
+            } 
+            catch [Exception] 
+            { 
+                throw "$($_.Exception.Message) : Try a different media type." 
+            } 
+        }
+    }
+
+    End {
+        if ($BootOptions -ne $null) 
+        { 
+            $Image.BootImageOptions = $BootOptions 
+        }  
+    
+        $Result = $Image.CreateResultImage()  
+
+        if (-not ($Target = New-Item -Path $Destination -ItemType File -Force:$Force -ErrorAction SilentlyContinue))
+        {
+            throw "Could not create file at $Destination. Use -Force parameter to overwrite an existing file."
+        }
+
+        [BAMCIS.FileIO.ISO.ISOFile]::Create(
+            $Target.FullName,
+            $Result.ImageStream,
+            $Result.BlockSize,
+            $Result.TotalBlocks
+        ) 
+    
+        Write-Verbose -Message "Target image $($Target.FullName) has been created"
+    
+        Write-Output -InputObject $Target
+    }
 }
