@@ -1703,7 +1703,9 @@ namespace BAMCIS.FileIO.ISO
             [System.CodeDom.Compiler.CompilerParameters]$CompilerParameters = New-Object -TypeName System.CodeDom.Compiler.CompilerParameters
             $CompilerParameters.CompilerOptions = "/unsafe"
 
-            # Needs to be unsafe so that we can reference
+            # Needs to be unsafe so that we can reference the address for the Bytes variable
+			# and create and IntPtr from it that is used by the stream to track where in the
+			# input stream the reader currently is
             Add-Type -CompilerParameters $CompilerParameters -TypeDefinition @"
 using System.Runtime.InteropServices.ComTypes;
 using System.IO;
